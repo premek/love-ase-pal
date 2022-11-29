@@ -31,8 +31,9 @@ local DWORD = 4
 local LONG = 4
 local FIXED = 4
 
-return function(data)
+local load = function(data)
   local current = 0
+  local palette = {}
 
   local function next()
     current = current + 1
@@ -58,61 +59,57 @@ return function(data)
     return s
   end
 
-  local function grab_header()
-    local header = {}
 
-    header.file_size = read_num(DWORD)
-    header.magic_number = read_num(WORD)
+  local function grab_palette()
+    local entry_size = read_num(DWORD)
+    local first_color = read_num(DWORD)
+    local last_color = read_num(DWORD)
 
-    if header.magic_number ~= 0xA5E0 then
-      error("Not a valid aseprite file")
+    -- skip
+    read_num(BYTE * 8)
+
+    -- 0-based to keep the indexes the same as the ones displayed in aseprite
+    for i = 0, entry_size-1 do
+      local has_name = read_num(WORD)
+
+      -- convert colors from 0..255 to 0..1
+      palette[i] = {
+        read_num(BYTE) / 255,
+        read_num(BYTE) / 255,
+        read_num(BYTE) / 255,
+        read_num(BYTE) / 255
+      }
+
+      if has_name == 1 then
+        local name = read_string()
+        -- ignore color name, it probably cannot be set from aseprite
+      end
     end
 
-    header.frames_number = read_num(WORD)
-    header.width = read_num(WORD)
-    header.height = read_num(WORD)
-    header.color_depth = read_num(WORD)
-    header.opacity = read_num(DWORD)
-    header.speed = read_num(WORD)
-
-    -- skip
-    read_num(DWORD * 2)
-
-    header.palette_entry = read_num(BYTE)
-
-    -- skip
-    read_num(BYTE * 3)
-
-    header.number_color = read_num(WORD)
-    header.pixel_width = read_num(BYTE)
-    header.pixel_height = read_num(BYTE)
-    header.grid_x = read_num(SHORT)
-    header.grid_y = read_num(SHORT)
-    header.grid_width = read_num(WORD)
-    header.grid_height = read_num(WORD)
-
-    -- skip
-    read_num(BYTE * 84)
-
-    -- to the future
-    header.frames = {}
-
-    return header
   end
 
+
+  local function grab_chunk()
+    local size = read_num(DWORD)
+    local type = read_num(WORD)
+
+    if type == 0x2019 then
+      grab_palette()
+    end
+  end
+
+
   local function grab_frame_header()
-    local frame_header = {}
+    local bytes_size = read_num(DWORD)
+    local magic_number = read_num(WORD)
 
-    frame_header.bytes_size = read_num(DWORD)
-    frame_header.magic_number = read_num(WORD)
-
-    if frame_header.magic_number ~= 0xF1FA then
+    if magic_number ~= 0xF1FA then
       error("Corrupted file")
     end
 
     local old_chunks = read_num(WORD)
 
-    frame_header.frame_duration = read_num(WORD)
+    local frame_duration = read_num(WORD)
 
     -- skip
     read_num(BYTE * 2)
@@ -120,241 +117,69 @@ return function(data)
     -- if 0, use old chunks as chunks
     local new_chunks = read_num(DWORD)
 
+    local chunks_number
     if new_chunks == 0 then
-      frame_header.chunks_number = old_chunks
+      chunks_number = old_chunks
     else
-      frame_header.chunks_number = new_chunks
+      chunks_number = new_chunks
     end
 
-    -- to the future
-    frame_header.chunks = {}
+    -- parse frames chunks
+    for i = 1, chunks_number do
+      grab_chunk()
+    end
 
-    return frame_header
   end
 
-  local function grab_color_profile()
-    local color_profile = {}
 
-    color_profile.type = read_num(WORD)
-    color_profile.uses_fixed_gama = read_num(WORD)
-    color_profile.fixed_game = read_num(FIXED)
+  local function load()
+    local file_size = read_num(DWORD)
+    local magic_number = read_num(WORD)
+
+    if magic_number ~= 0xA5E0 then
+      error("Not a valid aseprite file")
+    end
+
+    local frames_number = read_num(WORD)
+    local width = read_num(WORD)
+    local height = read_num(WORD)
+    local color_depth = read_num(WORD)
+    local opacity = read_num(DWORD)
+    local speed = read_num(WORD)
 
     -- skip
-    read_num(BYTE * 8)
+    read_num(DWORD * 2)
 
-    if color_profile.type ~= 1 then
-      error("No suported color profile, use sRGB")
-    end
-
-    return color_profile
-  end
-
-  local function grab_palette()
-    local palette = {}
-
-    palette.entry_size = read_num(DWORD)
-    palette.first_color = read_num(DWORD)
-    palette.last_color = read_num(DWORD)
-    palette.colors = {}
-
-    -- skip
-    read_num(BYTE * 8)
-
-    for i = 1, palette.entry_size do
-      local has_name = read_num(WORD)
-
-      palette.colors[i] = {
-        color = {
-          read_num(BYTE),
-          read_num(BYTE),
-          read_num(BYTE),
-          read_num(BYTE)}}
-
-      if has_name == 1 then
-        palette.colors[i].name = read_string()
-      end
-    end
-
-    return palette
-  end
-
-  local function grab_old_palette()
-    local palette = {}
-
-    palette.packets = read_num(WORD)
-    palette.colors_packet = {}
-
-    for i = 1, palette.packets do
-      palette.colors_packet[i] = {
-        entries = read_num(BYTE),
-        number = read_num(BYTE),
-        colors = {}}
-
-      for j = 1, palette.colors_packet[i].number do
-        palette.colors_packet[i][j] = {
-          read_num(BYTE),
-          read_num(BYTE),
-          read_num(BYTE)}
-      end
-    end
-
-    return palette
-  end
-
-  local function grab_layer()
-    local layer = {}
-
-    layer.flags = read_num(WORD)
-    layer.type = read_num(WORD)
-    layer.child_level = read_num(WORD)
-    layer.width = read_num(WORD)
-    layer.height = read_num(WORD)
-    layer.blend = read_num(WORD)
-    layer.opacity = read_num(BYTE)
+    local palette_entry = read_num(BYTE)
 
     -- skip
     read_num(BYTE * 3)
 
-    layer.name = read_string()
-
-    return layer
-  end
-
-  local function grab_cel(size)
-    local cel = {}
-
-    cel.layer_index = read_num(WORD)
-    cel.x = read_num(WORD)
-    cel.y = read_num(WORD)
-    cel.opacity_level = read_num(BYTE)
-    cel.type = read_num(WORD)
-
-    read_num(BYTE * 7)
-
-    if cel.type == 2 then
-      cel.width = read_num(WORD)
-      cel.height = read_num(WORD)
-      cel.data = data:sub(current, current + size - 26)
-      current = current + size - 26
-    end
-
-    return cel
-  end
-
-  local function grab_tags()
-    local tags = {}
-
-    tags.number = read_num(WORD)
-    tags.tags = {}
+    local number_color = read_num(WORD)
+    local pixel_width = read_num(BYTE)
+    local pixel_height = read_num(BYTE)
+    local grid_x = read_num(SHORT)
+    local grid_y = read_num(SHORT)
+    local grid_width = read_num(WORD)
+    local grid_height = read_num(WORD)
 
     -- skip
-    read_num(BYTE * 8)
+    read_num(BYTE * 84)
 
-    for i = 1, tags.number do
-      tags.tags[i] = {
-        from = read_num(WORD),
-        to = read_num(WORD),
-        direction = read_num(BYTE),
-        extra_byte = read_num(BYTE),
-        color = read_num(BYTE * 3),
-        skip_holder = read_num(BYTE * 8),
-        name = read_string()}
+    -- parse frames
+    for i = 1, frames_number do
+      grab_frame_header()
     end
 
-    return tags
   end
 
-  local function grab_slice()
-    local slice = {}
+  load()
 
-    slice.key_numbers = read_num(DWORD)
-    slice.keys = {}
-    slice.flags = read_num(DWORD)
-
-    -- reserved?
-    read_num(DWORD)
-
-    slice.name = read_string()
-
-    for i = 1, slice.key_numbers do
-      slice.keys[i] = {
-        frame = read_num(DWORD),
-        x = read_num(DWORD),
-        y = read_num(DWORD),
-        width = read_num(DWORD),
-        height = read_num(DWORD)}
-
-      if slice.flags == 1 then
-        slice.keys[i].center_x = read_num(DWORD)
-        slice.keys[i].center_y = read_num(DWORD)
-        slice.keys[i].center_width = read_num(DWORD)
-        slice.keys[i].center_height = read_num(DWORD)
-      elseif slice.flags == 2 then
-        slice.keys[i].pivot_x = read_num(DWORD)
-        slice.keys[i].pivot_y = read_num(DWORD)
-      end
-    end
-
-    return slice
-  end
-
-  local function grab_user_data()
-    local user_data = {}
-
-    user_data.flags = read_num(DWORD)
-
-    if user_data.flags == 1 then
-      user_data.text = read_string()
-    elseif user_data.flags == 2 then
-      user_data.colors = read_num(BYTE * 4)
-    end
-
-    return user_data
-  end
-
-  local function grab_chunk()
-    local chunk = {}
-    chunk.size = read_num(DWORD)
-    chunk.type = read_num(WORD)
-
-    if chunk.type == 0x2007 then
-      chunk.data = grab_color_profile()
-    elseif chunk.type == 0x2019 then
-      chunk.data = grab_palette()
-    elseif chunk.type == 0x0004 then
-      chunk.data = grab_old_palette()
-    elseif chunk.type == 0x2004 then
-      chunk.data = grab_layer()
-    elseif chunk.type == 0x2005 then
-      chunk.data = grab_cel(chunk.size)
-    elseif chunk.type == 0x2018 then
-      chunk.data = grab_tags()
-    elseif chunk.type == 0x2022 then
-      chunk.data = grab_slice()
-    elseif chunk.type == 0x2020 then
-      chunk.data = grab_user_data()
-    end
-
-    return chunk
-  end
-
-
-
-  local ase = {}
-
-  -- parse header
-  ase.header = grab_header()
-
-  -- parse frames
-  for i = 1, ase.header.frames_number do
-    ase.header.frames[i] = grab_frame_header()
-
-    -- parse frames chunks
-    for j = 1, ase.header.frames[i].chunks_number do
-      ase.header.frames[i].chunks[j] = grab_chunk()
-    end
-  end
-
-  return ase
+  return palette
 
 end
+
+
+return {
+  load = load
+}
