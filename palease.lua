@@ -2,6 +2,7 @@
 MIT License
 
 Copyright (c) 2021 Pedro Lucas (github.com/elloramir)
+Copyright (c) 2022 github.com/premek
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -30,23 +31,31 @@ local DWORD = 4
 local LONG = 4
 local FIXED = 4
 
+return function(data)
+    local current = 0
+
+    local function next()
+        current = current + 1
+        return data:byte(current)
+    end
+    
 -- parse data/text to number
 local function read_num(data, size)
-	local bytes = data:read(size)
-	local hex = ""
-
-	for i = size, 1, -1 do
-		local char = string.sub(bytes, i, i)
-		hex = hex .. string.format("%02X", string.byte(char))
-	end
-
-	return tonumber(hex, 16)
+    local n = 0
+    for i = 0, size-1 do
+        n = n + next() * 256 ^ i
+    end
+    print(string.format("%0"..size.."X", n))
+	return n;
 end
 
 -- return a string by it size
 local function read_string(data)
 	local length = read_num(data, WORD)
-	return data:read(length)
+	local s = data:sub(current, current+length)
+    current = current + length
+    print(s)
+    return s
 end
 
 local function grab_header(data)
@@ -225,7 +234,8 @@ local function grab_cel(data, size)
 	if cel.type == 2 then
 		cel.width = read_num(data, WORD)
 		cel.height = read_num(data, WORD)
-		cel.data = data:read(size - 26)
+		cel.data = data:sub(current, current + size - 26)
+        current = current + size - 26
 	end
 
 	return cel
@@ -328,9 +338,8 @@ local function grab_chunk(data)
 	return chunk
 end
 
-local function ase_loader(src)
-	local data = io.open(src, "rb")
-	assert(data, "can't open " .. src)
+
+
 	local ase = {}
 
 	-- parse header
@@ -346,8 +355,6 @@ local function ase_loader(src)
 		end
 	end
 
-	data.close()
 	return ase
-end
 
-return ase_loader
+end
